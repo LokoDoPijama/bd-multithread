@@ -82,7 +82,7 @@ static void *tpool_worker(void *arg) // Função que será executada pelas threa
     while (1) {
         pthread_mutex_lock(&(tm->work_mutex));
 
-        printf("\n\e[32mThread disponivel tid=%p\n\e[0m", pthread_self());
+        printf("\n\e[32m(Thread pool) Thread disponivel tid=%p\n\n\e[0m", pthread_self());
 
         while (tm->work_first == NULL && !tm->stop)
             pthread_cond_wait(&(tm->work_cond), &(tm->work_mutex));
@@ -91,18 +91,15 @@ static void *tpool_worker(void *arg) // Função que será executada pelas threa
             break;
             
         work = tpool_work_get(tm);
-        printf("\n\e[32mThread tpool_work_get work &=%x\n\e[0m", (work));
         tm->working_cnt++;
         pthread_mutex_unlock(&(tm->work_mutex));
 
         if (work != NULL) {
-            printf("\n\e[32mThread trabalhando... tid=%p\n\e[0m", pthread_self());
+            printf("\n\e[32m(Thread pool) Thread trabalhando... tid=%p\n\e[0m", pthread_self());
             work->output = work->func(work->arg);
-            printf("\n\e[32mThread finalizou trabalho tid=%p\n\e[0m", pthread_self());
+            printf("\n\e[32m(Thread pool) Thread finalizou trabalho tid=%p\n\e[0m", pthread_self());
             work->done = true;
             pthread_cond_broadcast(&(tm->done_cond));
-            printf("\n\e[32mThread sinalizou work &=%x\n\e[0m", (work));
-            // tpool_work_destroy(work);
         }
 
         pthread_mutex_lock(&(tm->work_mutex));
@@ -186,7 +183,6 @@ void *tpool_add_work(tpool_t *tm, thread_func_t func, void *arg)
         return false;
 
     work = tpool_work_create(func, arg);
-    printf("No add work: tpool_work_create work &=%x\n", (work));
     if (work == NULL)
         return false;
 
@@ -201,29 +197,18 @@ void *tpool_add_work(tpool_t *tm, thread_func_t func, void *arg)
 
     pthread_cond_broadcast(&(tm->work_cond)); 
 
-    // TODO: usar variável de condição para esperar
-    // o novo atributo booleano do tpool_work_t ser true
-    // e então retornar a saída da função que estará
-    // no outro atributo novo da struct
     while (!work->done) {
-        printf("No add work: work->done esperando sinalizacao work &=%x\n", (work));
         pthread_cond_wait(&(tm->done_cond), &(tm->work_mutex));
     }
-    printf("No add work: work->done SINALIZADO work &=%x\n", (work));
 
     void *output = NULL;
 
-    printf("[DEBUG] TESTE TESTE\n");
-    printf("[DEBUG] %s\n", work->output);
-    printf("[DEBUG] e teste denovo\n");
     if (work->output != NULL) {
         output = malloc(strlen(work->output));
         // memcpy(output, work->output, strlen(work->output));
         strcpy(output, work->output);
     }
     
-    printf("[DEBUG] No add work 2: %s", output);
-
     tpool_work_destroy(work);
     pthread_mutex_unlock(&(tm->work_mutex));
 

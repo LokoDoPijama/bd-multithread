@@ -15,8 +15,6 @@
 
 #define SOCK_PATH "/tmp/pipeso"
 
-/* ------------ VARIÁVEIS GLOBAIS ------------ */
-
 static const size_t num_threads = 4;
 tpool_t *tm;
 
@@ -84,6 +82,7 @@ socket_node *insertSocket(socket_list *list, int sockfd) {
     return new_socket;
 }
 
+// TODO: atualizar last
 void removeSocket(socket_list *list, int sockfd) {
     socket_node *temp = list->first;
     socket_node *found = NULL;
@@ -106,8 +105,6 @@ void removeSocket(socket_list *list, int sockfd) {
         list->first = temp->next;
     }
 
-    printf("[DEBUG] found and to be removed: %d", found->sockfd);
-
     if (found != NULL) {
         close(found->sockfd);
         free(found);
@@ -124,28 +121,12 @@ char *dataProcessing(void *args) {
 
     sleep(2);
 
-    printf("[DEBUG] dataProcessing: %s", data);
-
     return (void *) data;
 }
-
-    
-int socket_OK=0;
-
-void sigpipe_handler()
-{
-    printf("\nSIGPIPE caught\n");
-    socket_OK=0;
-}
-
 
 void *readSocket(void *args) {
     socket_node *socket = (socket_node *) args;
     char buffer[1024];
-
-    signal(SIGPIPE,sigpipe_handler);
-
-    socket_OK = 1;
 
     while (1) {
         memset(buffer, '\0', strlen(buffer));
@@ -156,22 +137,17 @@ void *readSocket(void *args) {
         if (read(socket->sockfd, buffer, sizeof(buffer)) < 0)
         {
             perror("Falha em ler do socket");
-            printf("[DEBUG] socket_node ainda alocado com sockfd %d\n", socket->sockfd);
-            removeSocket(sock_list, socket->sockfd);
+            removeSocket(sock_list, socket->sockfd); // TODO: adicionar mutex específico para quando modificar lista de sockets (com insertSocket ou removeSocket)
             return 1;
         }
 
         if (write(socket->sockfd, NULL, 0) < 0) {
-            printf("[DEBUG] Socket fechado\n");
-            printList(sock_list);
-            printf("[DEBUG] socket to be removed: %d\n", socket->sockfd);
+            printf("Socket %d fechado\n", socket->sockfd);
             removeSocket(sock_list, socket->sockfd);
-            printList(sock_list);
             return 1;            
         }
 
         printf("Dado recebido: %s\n", buffer);
-        // printf("\e[32mDado recebido: %s\nNa thread (em pool) tid=%p\e[0m\n", buffer, pthread_self());
 
         char *output = (char *) tpool_add_work(tm, dataProcessing, buffer);
 
@@ -179,7 +155,6 @@ void *readSocket(void *args) {
         if (write(socket->sockfd, output, strlen(output) + 1) < 0)
         {
             perror("Falha em escrever no socket");
-            printf("[DEBUG] socket_node ainda alocado com sockfd %d\n", socket->sockfd);
             removeSocket(sock_list, socket->sockfd);
             return 1;
         }
@@ -268,14 +243,18 @@ void *listenToConnections(void *args) {
     }
 }
 
-
-
 /* ------------ FIM LISTA ENCADEADA DE SOCKETS ------------ */
 
 
+void sigpipe_handler()
+{
+    printf("\nSIGPIPE caught\n");
+}
 
 int main()
 {
+    signal(SIGPIPE,sigpipe_handler);
+
     tm = tpool_create(num_threads);
     sock_list = createSocketList();
 
