@@ -26,6 +26,7 @@ typedef struct socket_list
     struct socket_node *first;
     struct socket_node *last;
     size_t socket_count;
+    pthread_mutex_t socket_mutex; // Mutex para modificar a lista de sockets
     
 } socket_list;
 
@@ -55,6 +56,8 @@ socket_list *createSocketList() {
     new_list->last = NULL;
     new_list->socket_count = 0;
 
+    pthread_mutex_init(&(new_list->socket_mutex), NULL);
+
     return new_list;
 }
 
@@ -69,6 +72,8 @@ socket_node *createSocketNode(int sockfd) {
 socket_node *insertSocket(socket_list *list, int sockfd) {
     socket_node *new_socket = createSocketNode(sockfd);
 
+    pthread_mutex_lock(&(list->socket_mutex));
+    
     if (list->first == NULL) {
         list->first = new_socket;
         list->last = new_socket;
@@ -79,11 +84,14 @@ socket_node *insertSocket(socket_list *list, int sockfd) {
 
     list->socket_count++;
 
+    pthread_mutex_unlock(&(list->socket_mutex));
+
     return new_socket;
 }
 
-// TODO: atualizar last
 void removeSocket(socket_list *list, int sockfd) {
+    pthread_mutex_lock(&(list->socket_mutex));
+
     socket_node *temp = list->first;
     socket_node *found = NULL;
     
@@ -91,19 +99,30 @@ void removeSocket(socket_list *list, int sockfd) {
         return;
     }
 
-    if (temp->sockfd != sockfd) {
+    if (temp->sockfd != sockfd) { // Se o item a ser removido não é o primeiro da lista
         while (temp->next != NULL) {
             if (temp->next->sockfd == sockfd) {
                 found = temp->next;
                 temp->next = temp->next->next;
+                if (found->next == NULL) { // Se item a ser removido é o último da lista
+                    list->last = temp;
+                }
                 break;
             }
             temp = temp->next;
         }
+
     } else {
+        // Item a ser removido é o primeiro da lista
         found = temp;
         list->first = temp->next;
+        if (temp->next == NULL) {
+            list->last = NULL;
+        }
+
     }
+
+    pthread_mutex_unlock(&(list->socket_mutex));
 
     if (found != NULL) {
         close(found->sockfd);
@@ -137,7 +156,7 @@ void *readSocket(void *args) {
         if (read(socket->sockfd, buffer, sizeof(buffer)) < 0)
         {
             perror("Falha em ler do socket");
-            removeSocket(sock_list, socket->sockfd); // TODO: adicionar mutex específico para quando modificar lista de sockets (com insertSocket ou removeSocket)
+            removeSocket(sock_list, socket->sockfd);
             return 1;
         }
 
@@ -246,14 +265,21 @@ void *listenToConnections(void *args) {
 /* ------------ FIM LISTA ENCADEADA DE SOCKETS ------------ */
 
 
+
 void sigpipe_handler()
 {
-    printf("\nSIGPIPE caught\n");
+    // SIGPIPE caught
 }
 
 int main()
 {
-    signal(SIGPIPE,sigpipe_handler);
+    // Capturando sinais SIGPIPE, que indicam 'broken pipe' (conexão com o cliente terminada) e executando 'sigpipe_handler()'.
+    // Na prática, isso faz com que uma terminação da conexão do cliente não pare o servidor.
+    struct sigaction act = {
+        .sa_handler = sigpipe_handler,
+        .sa_flags = 0,
+    };
+    sigaction(SIGPIPE, &act, NULL);
 
     tm = tpool_create(num_threads);
     sock_list = createSocketList();
