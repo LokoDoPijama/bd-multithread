@@ -13,19 +13,8 @@ struct tpool_work {
     void              *output;
     struct tpool_work *next;
 };
-typedef struct tpool_work tpool_work_t;
 
-struct tpool {
-    tpool_work_t    *work_first;
-    tpool_work_t    *work_last;
-    pthread_mutex_t  work_mutex;
-    pthread_cond_t   work_cond;
-    pthread_cond_t   working_cond;
-    pthread_cond_t   done_cond;
-    size_t           working_cnt;
-    size_t           thread_cnt;
-    bool             stop;
-};
+// Outras estruturas declaradas em 'tpool.h'
 
 
 /* ------------------------------ FUNÇÕES PARA OS WORKERS ------------------------------ */
@@ -74,7 +63,8 @@ static tpool_work_t *tpool_work_get(tpool_t *tm)
     return work;
 }
 
-static void *tpool_worker(void *arg) // Função que será executada pelas threads
+// Função que ficará sendo executada continuadamente em cada uma das threads na pool até o programa finalizar
+static void *tpool_worker(void *arg)
 {
     tpool_t      *tm = arg;
     tpool_work_t *work;
@@ -82,7 +72,7 @@ static void *tpool_worker(void *arg) // Função que será executada pelas threa
     while (1) {
         pthread_mutex_lock(&(tm->work_mutex));
 
-        printf("\n\e[32m(Thread pool) Thread disponivel tid=%p\n\n\e[0m", pthread_self());
+        printf("\e[32m(Thread pool) Thread disponivel tid=%p\n\n\e[0m", pthread_self());
 
         while (tm->work_first == NULL && !tm->stop)
             pthread_cond_wait(&(tm->work_cond), &(tm->work_mutex));
@@ -95,22 +85,23 @@ static void *tpool_worker(void *arg) // Função que será executada pelas threa
         pthread_mutex_unlock(&(tm->work_mutex));
 
         if (work != NULL) {
-            printf("\n\e[32m(Thread pool) Thread trabalhando... tid=%p\n\e[0m", pthread_self());
+            printf("\e[32m(Thread pool) Thread trabalhando... tid=%p\n\n\e[0m", pthread_self());
             work->output = work->func(work->arg);
-            printf("\n\e[32m(Thread pool) Thread finalizou trabalho tid=%p\n\e[0m", pthread_self());
-            work->done = true;
-            pthread_cond_broadcast(&(tm->done_cond));
+            printf("\e[32m(Thread pool) Thread finalizou trabalho tid=%p\n\n\e[0m", pthread_self());
         }
 
         pthread_mutex_lock(&(tm->work_mutex));
+        work->done = true;
+        pthread_cond_broadcast(&(tm->done_cond));
         tm->working_cnt--;
-        if (!tm->stop && tm->working_cnt == 0 && tm->work_first == NULL)
-            pthread_cond_signal(&(tm->working_cond));
+        if (!tm->stop && tm->working_cnt == 0 && tm->work_first == NULL) {
+            pthread_cond_broadcast(&(tm->working_cond));
+        }
         pthread_mutex_unlock(&(tm->work_mutex));
     }
 
     tm->thread_cnt--;
-    pthread_cond_signal(&(tm->working_cond));
+    pthread_cond_broadcast(&(tm->working_cond));
     pthread_mutex_unlock(&(tm->work_mutex));
     return NULL;
 }
@@ -146,6 +137,7 @@ tpool_t *tpool_create(size_t num)
     return tm;
 }
 
+// (função não utilizada)
 void tpool_destroy(tpool_t *tm)
 {
     tpool_work_t *work;
@@ -205,7 +197,6 @@ void *tpool_add_work(tpool_t *tm, thread_func_t func, void *arg)
 
     if (work->output != NULL) {
         output = malloc(strlen(work->output));
-        // memcpy(output, work->output, strlen(work->output));
         strcpy(output, work->output);
     }
     
@@ -215,6 +206,7 @@ void *tpool_add_work(tpool_t *tm, thread_func_t func, void *arg)
     return output;
 }
 
+// Espera a pool terminar tudo (função não utilizada)
 void tpool_wait(tpool_t *tm)
 {
     if (tm == NULL)

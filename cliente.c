@@ -34,11 +34,11 @@ int main()
         return 1;
     }
 
-    printf("Conectado ao servidor!\n");
+    printf("Conectado ao servidor!\n\n");
 
     while (1) {
         // Send data to server
-        printf("Entre com o dado a ser enviado: ");
+        printf("Entre com o comando a ser enviado: ");
         fgets(buffer, sizeof(buffer), stdin);
         if (write(sockfd, buffer, strlen(buffer) + 1) < 0)
         {
@@ -47,7 +47,9 @@ int main()
             return 1;
         }
 
-        printf("Dado enviado ao servidor.\n");
+        printf("\n");
+        printf("Comando enviado ao servidor.\n");
+        printf("Esperando resposta...\n\n");
 
         // Read data from server
         if (read(sockfd, buffer, sizeof(buffer)) < 0)
@@ -57,7 +59,7 @@ int main()
             return 1;
         }
 
-        printf("Dado recebido: %s\n", buffer);
+        printf("%s\n\n", buffer);
     }
     
     // Close socket and exit

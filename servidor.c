@@ -1,6 +1,3 @@
-// Compilar com:
-// gcc -o servidor servidor.c tpool.c
-
 //Servidor pipe (testado usando WSL)
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,12 +9,12 @@
 #include <signal.h>
 #include <string.h>
 #include "tpool.h"
+#include "sgbd.h"
 
 #define SOCK_PATH "/tmp/pipeso"
 
 static const size_t num_threads = 4;
 tpool_t *tm;
-
 
 /* ------------ LISTA ENCADEADA DE SOCKETS ------------ */
 
@@ -40,6 +37,7 @@ typedef struct socket_node
 
 socket_list *sock_list; // Lista global de sockets
 
+// Função para debug
 void printList(socket_list *list) {
     socket_node *temp = list->first;
 
@@ -131,16 +129,73 @@ void removeSocket(socket_list *list, int sockfd) {
 
 }
 
+/* ------------ FIM LISTA ENCADEADA DE SOCKETS ------------ */
+
+
+// Variáveis globais para a função 'dataProcessing()' (inicializadas no main)
+pthread_mutex_t write_mutex;      // Mutex de escrita para controlar quais operações podem executar simultaneamente
+pthread_mutex_t wr_control_mutex; // Mutex para proteger operações envolvendo 'read_cont'
+pthread_cond_t done_cond;         // Ajuda a sinalizar que uma operação de banco terminou
+size_t read_cont = 0;             // Número de leituras sendo realizadas
+
+// Função que é executada pelo worker de cada thread
 char *dataProcessing(void *args) {
     char *data = (char *) args;
 
-    for (int i = 0; i < strlen(data); i++) {
-        data[i] = toupper(data[i]);
+    db_parsed_command cmd;
+
+    if (!parse_command(data, &cmd)) { // Salva o comando estruturado em 'cmd'
+        char *message = "Comando inválido!";
+        return message;
     }
 
-    sleep(2);
 
-    return (void *) data;
+    pthread_mutex_lock(&(write_mutex)); // Tranca 'write_mutex' (todos os comandos são barrados aqui se ele estiver trancado)
+
+    if (cmd.type == CMD_SELECT) {
+        // Leitura
+        pthread_mutex_unlock(&write_mutex); // Libera 'write_mutex', caso o comando for de leitura
+        pthread_mutex_lock(&wr_control_mutex);
+        read_cont++;
+        pthread_mutex_unlock(&wr_control_mutex);
+        
+    } else {
+        // Escrita
+        // 'write_mutex' não é liberado aqui
+        pthread_mutex_lock(&wr_control_mutex);
+        while (read_cont > 0)
+            pthread_cond_wait(&done_cond, &wr_control_mutex); // Libera 'wr_control_mutex' e fica esperando 'done_cond' ser sinalizado por 'pthread_cond_broadcast()'
+        pthread_mutex_unlock(&wr_control_mutex);
+
+    }
+
+    sleep(2); // sleep opcional para simular operações demoradas
+
+    db_response *response = db_execute_statement(data);
+
+    if (cmd.type == CMD_SELECT) {
+        // Leitura
+        pthread_mutex_lock(&wr_control_mutex);
+        read_cont--;
+        pthread_mutex_unlock(&wr_control_mutex);
+        
+    } else {
+        // Escrita
+        pthread_mutex_unlock(&write_mutex); // Libera 'write_mutex'
+
+    }
+
+    pthread_cond_broadcast(&done_cond); // Sinaliza que uma operação de banco terminou (serve para operações de escrita que estão esperando 'done_cond')
+
+
+    char *message = response->message;
+    
+    if (response->entry != NULL) {
+        free(response->entry);
+    }
+    free(response);
+
+    return (void *) message; // Retorna conteúdo textual
 }
 
 void *readSocket(void *args) {
@@ -150,7 +205,7 @@ void *readSocket(void *args) {
     while (1) {
         memset(buffer, '\0', strlen(buffer));
 
-        printf("Esperando dados do cliente...\n");
+        printf("Esperando comandos do cliente no socket %d...\n\n", socket->sockfd);
 
         // Read data from client
         if (read(socket->sockfd, buffer, sizeof(buffer)) < 0)
@@ -161,46 +216,35 @@ void *readSocket(void *args) {
         }
 
         if (write(socket->sockfd, NULL, 0) < 0) {
-            printf("Socket %d fechado\n", socket->sockfd);
+            printf("Socket %d fechado\n\n", socket->sockfd);
             removeSocket(sock_list, socket->sockfd);
             return 1;            
         }
 
-        printf("Dado recebido: %s\n", buffer);
+        printf("Comando recebido: %s\n", buffer);
 
         char *output = (char *) tpool_add_work(tm, dataProcessing, buffer);
 
         // Write socket->sockfd data back to client
         if (write(socket->sockfd, output, strlen(output) + 1) < 0)
         {
+            free(output);
             perror("Falha em escrever no socket");
             removeSocket(sock_list, socket->sockfd);
             return 1;
         }
 
-        printf("Dado enviado de volta para o cliente.\n");
+        printf("Resposta enviada para o cliente no socket %d.\n\n", socket->sockfd);
 
     }
 }
 
-void *testThread(void *arg)
-{
-    char *input = (char *) arg;
-
-    printf("\e[33mTrabalhando em thread de teste... vindo de (em pool) tid=%p\n\e[0m", pthread_self(), input);
-    
-    sleep(strlen(input));
-    
-    printf("\e[33mIsso eh um teste vindo de (em pool) tid=%p\nCom parâmetro: %s\n\e[0m", pthread_self(), input);
-
-    return NULL;
-}
-
+// Função que fica esperando conexões de clientes e cria uma thread para cada cliente novo
 void *listenToConnections(void *args) {
     int sockfd, newsockfd, len;
     struct sockaddr_un local, remote;
 
-    // Create socket
+    // Cria o socket para a conexão
     sockfd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (sockfd < 0)
     {
@@ -208,7 +252,7 @@ void *listenToConnections(void *args) {
         return 1;
     }
 
-    // Bind socket to local address
+    // Faz o 'bind' do socket com o endereço (SOCK_PATH)
     memset(&local, 0, sizeof(local));
     local.sun_family = AF_UNIX;
     strncpy(local.sun_path, SOCK_PATH, sizeof(local.sun_path) - 1);
@@ -221,7 +265,7 @@ void *listenToConnections(void *args) {
         return 1;
     }
 
-    // Listen for connections
+    // Prepara para escutar o socket
     if (listen(sockfd, 5) < 0)
     {
         perror("Falha em escutar o socket");
@@ -229,13 +273,13 @@ void *listenToConnections(void *args) {
         return 1;
     }
 
-    printf("Servidor Named pipe ouvindo em %s...\n", SOCK_PATH);
+    printf("Servidor Named Pipe ouvindo em %s...\n\n\n", SOCK_PATH);
 
     while (1) {
-        // Accept connections
         memset(&remote, 0, sizeof(remote));
         len = sizeof(remote);
 
+        // Fica esperando conexões de clientes
         newsockfd = accept(sockfd, (struct sockaddr *)&remote, &len);
 
         if (newsockfd < 0)
@@ -245,25 +289,18 @@ void *listenToConnections(void *args) {
             return 1;
         }
         
+        // Cria um socket para a nova conexão com o cliente
         socket_node *new_socket = insertSocket(sock_list, newsockfd);
 
+        // Cria uma thread nova para o cliente
         pthread_t clientThread;
         pthread_create(&clientThread, NULL, readSocket, new_socket);
         pthread_detach(clientThread);
 
-        // tpool_add_work(tm, testThread, "c");
-        // tpool_add_work(tm, testThread, "medi");
-        // tpool_add_work(tm, testThread, "Teste looongo");
-        // tpool_add_work(tm, testThread, "VAMO ENCHER ESSA FILA AEEEE");
-        // tpool_add_work(tm, readSocket, new_socket);
-
-        printf("Cliente conectado!\n");
+        printf("Cliente conectado em socket %d!\n\n", newsockfd);
 
     }
 }
-
-/* ------------ FIM LISTA ENCADEADA DE SOCKETS ------------ */
-
 
 
 void sigpipe_handler()
@@ -281,21 +318,22 @@ int main()
     };
     sigaction(SIGPIPE, &act, NULL);
 
+
+    // Inicializa variáveis globais
+
+    pthread_mutex_init(&write_mutex, NULL);
+    pthread_mutex_init(&wr_control_mutex, NULL);
+    pthread_cond_init(&done_cond, NULL);
+
     tm = tpool_create(num_threads);
     sock_list = createSocketList();
 
+
+    // Inicia thread principal que espera conexões de clientes
+    
     pthread_t listenerThread;
     pthread_create(&listenerThread, NULL, listenToConnections, NULL);
     pthread_join(listenerThread, NULL);
-
-
-
-
-
-
-
-
-
 
     return 0;
 }
